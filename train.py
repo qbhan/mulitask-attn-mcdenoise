@@ -13,6 +13,7 @@ import os
 import numpy as np
 import argparse
 import csv
+import random
 from tqdm import tqdm
 
 from utils import *
@@ -20,6 +21,8 @@ from model import *
 from visualize import *
 from losses import *
 from dataset import KPCNDataset, MSDenoiseDataset, init_data
+
+# from test_cython import *
 
 # L = 9 # number of convolutional layers
 # n_kernels = 100 # number of kernels in each layer
@@ -65,6 +68,10 @@ lr : learning rate
 epoch : epoch
 criterion : which loss function should it use
 '''
+parser.set_defaults(do_feature_dropout=False)
+parser.add_argument('--do_feature_dropout', dest='do_feature_dropout', action='store_true')
+parser.set_defaults(do_finetune=False)
+parser.add_argument('--do_finetune', dest='do_finetune', action='store_true')
 parser.set_defaults(do_val=False)
 parser.add_argument('--do_val', dest='do_val', action='store_true')
 parser.set_defaults(do_early_stopping=False)
@@ -75,8 +82,26 @@ parser.add_argument('--lr', default=1e-4, type=float)
 parser.add_argument('--epochs', default=20, type=int)
 parser.add_argument('--loss', default='L1')
 
-save_dir = 'simple_feat_kpcn_2'
+save_dir = 'unet_kpcn_2'
 writer = SummaryWriter('runs/'+save_dir)
+
+
+def feature_dropout(tensor_input, threshold, device):
+  r = random.random()
+  if r < (threshold / 3):
+    size = tensor_input[:,10:20,:,:].shape
+    print(size)
+    tensor_input[:,10:20,:,:] = torch.zeros(size, device=device)
+  elif r < (2 * threshold / 3):
+    size = tensor_input[:,20:24,:,:].shape
+    print(size)
+    tensor_input[:,20:24,:,:] = torch.zeros(size, device=device)
+  elif r < threshold:
+    size = tensor_input[:,24:34,:,:].shape
+    print(size)
+    tensor_input[:,24:34,:,:] = torch.zeros(size, device=device)
+  return tensor_input
+
 
 
 def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoch, mode='kpcn'):
@@ -150,7 +175,7 @@ def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoc
 
     return lossDiff/(4*len(dataloader)), lossSpec/(4*len(dataloader)), lossFinal/(4*len(dataloader)), relL2Final/(4*len(dataloader))
 
-def train(mode, device, trainset, validset, eps, L, input_channels, hidden_channels, kernel_size, epochs, learning_rate, loss, do_early_stopping, show_images=False):
+def train(mode, device, trainset, validset, eps, L, input_channels, hidden_channels, kernel_size, epochs, learning_rate, loss, do_early_stopping, do_feature_dropout, do_finetune):
   # print('TRAINING WITH VALIDDATASET : {}'.format(validset))
   dataloader = DataLoader(trainset, batch_size=8, num_workers=1, pin_memory=False)
   print(len(dataloader))
@@ -169,6 +194,9 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   elif 'simple_feat' in mode:
     diffuseNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
     specularNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+  elif 'unet' in mode:
+    diffuseNet = make_Unet(input_channels, mode).to(device)
+    specularNet = make_Unet(input_channels, mode).to(device)
   else:
     print(mode)
     diffuseNet = make_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
@@ -191,13 +219,13 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   # checkpointDiff = torch.load('trained_model/kpcn_diff_e4.pt')
   # diffuseNet.load_state_dict(checkpointDiff['model_state_dict'])
   # optimizerDiff.load_state_dict(checkpointDiff['optimizer_state_dict'])
-  # diffuseNet.load_state_dict(torch.load('trained_model/check_kpcn_2/diff_e7.pt'))
+  diffuseNet.load_state_dict(torch.load('trained_model/unet_kpcn_2/diff_e2.pt'))
   # diffuseNet.train()
 
   # checkpointSpec = torch.load('trained_model/kpcn_spec_e4.pt')
   # specularNet.load_state_dict(checkpointSpec['model_state_dict'])
   # optimizerSpec.load_state_dict(checkpointSpec['optimizer_state_dict'])
-  # specularNet.load_state_dict(torch.load('trained_model/check_kpcn_2/spec_e7.pt'))
+  specularNet.load_state_dict(torch.load('trained_model/unet_kpcn_2/spec_e2.pt'))
   # specularNet.train()
 
 
@@ -215,16 +243,16 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   # writer = SummaryWriter('runs/'+mode+'_2')
   total_epoch = 0
 
-  print('Check Initialization')
-  initLossDiff, initLossSpec, initLossFinal, relL2LossFinal = validation(diffuseNet, specularNet, validDataloader, eps, criterion, device, -1, mode)
-  print("initLossDiff: {}".format(initLossDiff))
-  print("initLossSpec: {}".format(initLossSpec))
-  print("initLossFinal: {}".format(initLossFinal))
-  print("relL2LossFinal: {}".format(relL2LossFinal))
-  writer.add_scalar('Valid total relL2 loss', relL2LossFinal if relL2LossFinal != float('inf') else 0, 0)
-  writer.add_scalar('Valid total loss', initLossFinal if initLossFinal != float('inf') else 0, 0)
-  writer.add_scalar('Valid diffuse loss', initLossDiff if initLossDiff != float('inf') else 0, 0)
-  writer.add_scalar('Valid specular loss', initLossSpec if initLossSpec != float('inf') else 0, 0)
+  # print('Check Initialization')
+  # initLossDiff, initLossSpec, initLossFinal, relL2LossFinal = validation(diffuseNet, specularNet, validDataloader, eps, criterion, device, -1, mode)
+  # print("initLossDiff: {}".format(initLossDiff))
+  # print("initLossSpec: {}".format(initLossSpec))
+  # print("initLossFinal: {}".format(initLossFinal))
+  # print("relL2LossFinal: {}".format(relL2LossFinal))
+  # writer.add_scalar('Valid total relL2 loss', relL2LossFinal if relL2LossFinal != float('inf') else 0, 0)
+  # writer.add_scalar('Valid total loss', initLossFinal if initLossFinal != float('inf') else 0, 0)
+  # writer.add_scalar('Valid diffuse loss', initLossDiff if initLossDiff != float('inf') else 0, 0)
+  # writer.add_scalar('Valid specular loss', initLossSpec if initLossSpec != float('inf') else 0, 0)
 
 
   import time
@@ -239,7 +267,8 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   #     print('KPCN_DIFFUSE_IN : {}'.format(sample_batched['kpcn_diffuse_in'].shape))
   #     print('KPCN_DIFFUSE_BUFFER : {}'.format(sample_batched['kpcn_diffuse_buffer'].shape))
 
-  for epoch in range(epochs):
+  for epoch in range(2, epochs):
+    print('EPOCH {}'.format(epoch))
     # diffuseNet.train()
     # specularNet.train()
     # for i_batch, sample_batched in enumerate(dataloader):
@@ -251,19 +280,16 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
 
       # get the inputs
       X_diff = sample_batched['kpcn_diffuse_in'].to(device)
-      noisy_diff = sample_batched['kpcn_diffuse_buffer'].to(device)
+      X_diff = feature_dropout(X_diff, 1.0, device)
 
       Y_diff = sample_batched['target_diffuse'].to(device)
-      noisy_spec = sample_batched['kpcn_specular_buffer'].to(device)
-      # print('NOISY DIFF: {}, SPEC: {}'.format(noisy_diff.shape, noisy_spec.shape))
+      Y_diff = feature_dropout(Y_diff, 1.0, device)
       # print(X_diff.shape, Y_diff.shape)
       # zero the parameter gradients
       optimizerDiff.zero_grad()
 
       # forward + backward + optimize
       outputDiff = diffuseNet(X_diff)
-
-      # print()
 
       # if mode == 'KPCN':
       if 'kpcn' in mode:
@@ -296,7 +322,8 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
 
       lossDiff = criterion(outputDiff, Y_diff)
       lossSpec = criterion(outputSpec, Y_spec)
-      if epoch < 20:
+      # if epoch >= 0:
+      if not do_finetune:
         lossDiff.backward()
         optimizerDiff.step()
         lossSpec.backward()
@@ -316,7 +343,7 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
 
       lossFinal = criterion(outputFinal, Y_final)
 
-      if epoch >= 20:
+      if do_finetune:
         lossFinal.backward()
         optimizerDiff.step()
         optimizerSpec.step()
@@ -335,7 +362,7 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
     writer.add_scalar('Train specular loss', accuLossSpec if accuLossSpec != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
     # print('VALIDATION WORKING!')
     validLossDiff, validLossSpec, validLossFinal, relL2LossFinal = validation(diffuseNet, specularNet, validDataloader, eps, criterion, device, epoch, mode)
-    writer.add_scalar('Valid total relL2 loss', relL2LossFinal if relL2LossFinal != float('inf') else 0, 0)
+    writer.add_scalar('Valid total relL2 loss', relL2LossFinal if relL2LossFinal != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
     writer.add_scalar('Valid total loss', validLossFinal if accuLossFinal != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
     writer.add_scalar('Valid diffuse loss', validLossDiff if accuLossDiff != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
     writer.add_scalar('Valid specular loss', validLossSpec if accuLossSpec != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
@@ -399,82 +426,9 @@ def load_dataset(device, val=False):
   return dataset
 
 
-def train_dpcn(dataset, validset, device, eps, n_layers, size_kernel, in_channels, hidden_channels, epochs, lr, loss, do_early_stopping, save_dir=None):
-  pass
-  ddiffuseNet, dspecularNet, dlDiff, dlSpec, dlFinal = train('dpcn', device, dataset, validset, eps, n_layers, in_channels, hidden_channels, size_kernel, epochs, lr, loss, do_early_stopping)
-  torch.save(ddiffuseNet.state_dict(), 'trained_model/ddiffuseNet.pt')
-  torch.save(dspecularNet.state_dict(), 'trained_model/dspecularNet.pt')
-  with open('plot/dpcn.csv', 'w', newline='') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow(dlDiff)
-    csv_writer.writerow(dlSpec)
-    csv_writer.writerow(dlFinal)
-  return ddiffuseNet, dspecularNet, dlDiff, dlSpec, dlFinal
-
-
-
-def train_kpcn(dataset, validset, device, eps, n_layers, size_kernel, in_channels, hidden_channels, epochs, lr, loss, do_early_stopping, save_dir=None):
-  pass
-  kdiffuseNet, kspecularNet, klDiff, klSpec, klFinal = train('kpcn', device, dataset, validset, eps, n_layers, in_channels, hidden_channels, size_kernel, epochs, lr, loss, do_early_stopping)
-  torch.save(kdiffuseNet.state_dict(), 'trained_model/kdiffuseNet2.pt')
-  torch.save(kspecularNet.state_dict(), 'trained_model/kspecularNet2.pt')
-  with open('plot/kpcn.csv', 'w', newline='') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow(klDiff)
-    csv_writer.writerow(klSpec)
-    csv_writer.writerow(klFinal)
-  return kdiffuseNet, kspecularNet, klDiff, klSpec, klFinal
-
-
-def train_feat_dpcn(dataset, validset, device, eps, n_layers, size_kernel, in_channels, hidden_channels, epochs, lr, loss, do_early_stopping, save_dir=None):
-  pass
-  ddiffuseNet, dspecularNet, dlDiff, dlSpec, dlFinal = train('feat_dpcn', device, dataset, validset, eps, n_layers, in_channels, hidden_channels, size_kernel, epochs, lr, loss, do_early_stopping)
-  torch.save(ddiffuseNet.state_dict(), 'trained_model/feat_ddiffuseNet.pt')
-  torch.save(dspecularNet.state_dict(), 'trained_model/feat_dspecularNet.pt')
-  with open('plot/feat_dpcn.csv', 'w', newline='') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow(dlDiff)
-    csv_writer.writerow(dlSpec)
-    csv_writer.writerow(dlFinal)
-  return ddiffuseNet, dspecularNet, dlDiff, dlSpec, dlFinal
-
-
-def train_feat_kpcn(dataset, validset, device, eps, n_layers, size_kernel, in_channels, hidden_channels, epochs, lr, loss, do_early_stopping, save_dir=None):
-  pass
-  kdiffuseNet, kspecularNet, klDiff, klSpec, klFinal = train('feat_kpcn', device, dataset, validset, eps, n_layers, in_channels, hidden_channels, size_kernel, epochs, lr, loss, do_early_stopping)
-  torch.save(kdiffuseNet.state_dict(), 'trained_model/' +'/feat_kdiffuseNet.pt')
-  torch.save(kspecularNet.state_dict(), 'trained_model/' +'/feat_kspecularNet.pt')
-  with open('plot/feat_kpcn.csv', 'w', newline='') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow(klDiff)
-    csv_writer.writerow(klSpec)
-    csv_writer.writerow(klFinal)
-  return kdiffuseNet, kspecularNet, klDiff, klSpec, klFinal
-
-
-def train_eca_kpcn(dataset, validset, device, eps, n_layers, size_kernel, in_channels, hidden_channels, epochs, lr, loss, do_early_stopping, save_dir=None):
-  pass
-  kdiffuseNet, kspecularNet, klDiff, klSpec, klFinal = train('eca_kpcn', device, dataset, validset, eps, n_layers, in_channels, hidden_channels, size_kernel, epochs, lr, loss, do_early_stopping)
-  torch.save(kdiffuseNet.state_dict(), 'trained_model/' +'/eca_kdiffuseNet.pt')
-  torch.save(kspecularNet.state_dict(), 'trained_model/' +'/eca_kspecularNet.pt')
-  with open('plot/eca_kpcn.csv', 'w', newline='') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow(klDiff)
-    csv_writer.writerow(klSpec)
-    csv_writer.writerow(klFinal)
-  return kdiffuseNet, kspecularNet, klDiff, klSpec, klFinal
-
-
 def main():
   args = parser.parse_args()
   print(args)
-  
-  # Load Train & Validation Dataset
-  # trainset = load_dataset(args.device)
-  # validset = None
-  # # print(args.do_val)
-  # if args.do_val:
-  #   validset = load_dataset(args.device, args.do_val)
 
   dataset, dataloader = init_data(args)
   print(len(dataset['train']), len(dataloader['train']))
@@ -484,42 +438,22 @@ def main():
 
   input_channels = dataset['train'].dncnn_in_size
 
-  # assert(trainset[0]['X_diff'].shape[-1] == validset[0]['X_diff'].shape[-1])
-  # input_channels = trainset[0]['X_diff'].shape[-1]
-
-  diffuseNet, specularNet, Diff, Spec, Final = None, None, None, None, None
-  # train(args.mode, args.device, trainset, validset, eps, args.num_layers, input_channels, args.hidden_channels, args.kernel_size, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  if args.mode == 'dpcn':
-    pass
-    diffuseNet, specularNet, Diff, Spec, Final = train_dpcn(trainset, validset, args.device, args.eps, args.num_layers, args.kernel_size, input_channels, args.hidden_channels, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  elif args.mode == 'kpcn':
-    pass
-    diffuseNet, specularNet, Diff, Spec, Final = train_kpcn(trainset, validset, args.device, args.eps, args.num_layers, args.kernel_size, input_channels, args.hidden_channels, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  elif args.mode == 'feat_dpcn':
-    pass
-    diffuseNet, specularNet, Diff, Spec, Final = train_feat_dpcn(trainset, validset, args.device, args.eps, args.num_layers, args.kernel_size, input_channels, args.hidden_channels, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  elif args.mode == 'feat_kpcn':
-    pass
-    diffuseNet, specularNet, Diff, Spec, Final = train_feat_kpcn(trainset, validset, args.device, args.eps, args.num_layers, args.kernel_size, input_channels, args.hidden_channels, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  elif args.mode == 'eca_kpcn':
-    pass
-    diffuseNet, specularNet, Diff, Spec, Final = train_eca_kpcn(trainset, validset, args.device, args.eps, args.num_layers, args.kernel_size, input_channels, args.hidden_channels, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  elif args.mode == 'cbam_kpcn':
-    train('cbam_kpcn', args.device, trainset, validset, eps, args.num_layers, input_channels, args.hidden_channels, args.kernel_size, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  elif args.mode == 'simple_feat_kpcn':
-    train('simple_feat_kpcn', args.device, trainset, validset, eps, args.num_layers, input_channels, args.hidden_channels, args.kernel_size, args.epochs, args.lr, args.loss, args.do_early_stopping)
-
-  else:
-    assert(False)
-
-  # plot_training(Diff, Spec, args.mode)
+  train(
+    args.mode, 
+    args.device, 
+    trainset, 
+    validset, 
+    eps, 
+    args.num_layers, 
+    input_channels, 
+    args.hidden_channels, 
+    args.kernel_size, 
+    args.epochs, 
+    args.lr, 
+    args.loss, 
+    args.do_early_stopping, 
+    args.do_feature_dropout,
+    args.do_finetune)
   
 
 
