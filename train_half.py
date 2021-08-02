@@ -82,8 +82,8 @@ parser.add_argument('--lr', default=1e-4, type=float)
 parser.add_argument('--epochs', default=20, type=int)
 parser.add_argument('--loss', default='L1')
 
-save_dir = 'test_kpcn_finetune_3'
-writer = SummaryWriter('final_runs/'+save_dir)
+save_dir = 'nlb_kpcn_1'
+writer = SummaryWriter('runs/'+save_dir)
 
 
 def feature_dropout(tensor_input, threshold, device):
@@ -116,8 +116,8 @@ def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoc
   diffuseNet, specularNet = diffuseNet.eval(), specularNet.eval()
   with torch.no_grad():
     for data in tqdm(dataloader, leave=False, ncols=70):
-      X_diff = data['kpcn_diffuse_in'].to(device)
-      Y_diff = data['target_diffuse'].to(device)
+      X_diff = data['kpcn_diffuse_in'].to(device).half()
+      Y_diff = data['target_diffuse'].to(device).half()
 
       # print(diffuseNet.layer)
 
@@ -134,8 +134,8 @@ def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoc
       Y_diff = crop_like(Y_diff, outputDiff)
       lossDiff += criterion(outputDiff, Y_diff).item()
 
-      X_spec = data['kpcn_specular_in'].to(device)
-      Y_spec = data['target_specular'].to(device)
+      X_spec = data['kpcn_specular_in'].to(device).half()
+      Y_spec = data['target_specular'].to(device).half()
       
       outputSpec = specularNet(X_spec)
       # if mode == 'KPCN':
@@ -147,14 +147,14 @@ def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoc
       lossSpec += criterion(outputSpec, Y_spec).item()
 
       # calculate final ground truth error
-      albedo = data['kpcn_albedo'].to(device)
+      albedo = data['kpcn_albedo'].to(device).half()
       albedo = crop_like(albedo, outputDiff)
       outputFinal = outputDiff * (albedo + eps) + torch.exp(outputSpec) - 1.0
 
-      Y_final = data['target_total'].to(device)
+      Y_final = data['target_total'].to(device).half()
       Y_final = crop_like(Y_final, outputFinal)
       lossFinal += criterion(outputFinal, Y_final).item()
-      relL2Final += relL2(outputFinal, Y_final).item()
+      relL2Final += relL2(outputFinal, Y_final)
 
       # visualize
       if batch_idx == 10:
@@ -186,33 +186,30 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   # instantiate networks
   print(L, input_channels, hidden_channels, kernel_size, mode)
   if 'eca' in mode:
-    diffuseNet = make_ecanet(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_ecanet(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+    diffuseNet = make_ecanet(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
+    specularNet = make_ecanet(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
   elif 'cbam' in mode:
-    diffuseNet = make_cbamnet(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_cbamnet(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+    diffuseNet = make_cbamnet(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
+    specularNet = make_cbamnet(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
   elif 'simple_feat' in mode:
-    diffuseNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+    diffuseNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
+    specularNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
   elif 'simple' in mode:
-    diffuseNet = make_simple_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_simple_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+    diffuseNet = make_simple_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
+    specularNet = make_simple_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
   elif 'dense_unet' in mode:
-    diffuseNet = make_DenseUnet(input_channels, mode).to(device)
-    specularNet = make_DenseUnet(input_channels, mode).to(device)
+    diffuseNet = make_DenseUnet(input_channels, mode).to(device).half()
+    specularNet = make_DenseUnet(input_channels, mode).to(device).half()
   elif 'spc' in mode:
-    diffuseNet = make_spc_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_spc_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+    diffuseNet = make_spc_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
+    specularNet = make_spc_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
   elif 'nlb' in mode:
-    diffuseNet = make_nlb_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_nlb_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-  elif 'sa' in mode:
-    diffuseNet = make_sa_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_sa_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+    diffuseNet = make_nlb_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
+    specularNet = make_nlb_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
   else:
     print(mode)
-    diffuseNet = make_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
+    diffuseNet = make_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
+    specularNet = make_net(L, input_channels, hidden_channels, kernel_size, mode).to(device).half()
 
   print(diffuseNet, "CUDA:", next(diffuseNet.parameters()).is_cuda)
   print('# Parameter for diffuseNet : {}'.format(sum([p.numel() for p in diffuseNet.parameters()])))
@@ -225,18 +222,18 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
     print('Loss Not Supported')
     return
   print('LEARNING RATE : {}'.format(learning_rate))
-  optimizerDiff = optim.Adam(diffuseNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
-  optimizerSpec = optim.Adam(specularNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
+  optimizerDiff = optim.Adam(diffuseNet.parameters(), lr=learning_rate)
+  optimizerSpec = optim.Adam(specularNet.parameters(), lr=learning_rate)
 
-  checkpointDiff = torch.load('trained_model/kpcn_finetune_2/diff_e4.pt')
-  diffuseNet.load_state_dict(checkpointDiff['model_state_dict'])
-  optimizerDiff.load_state_dict(checkpointDiff['optimizer_state_dict'])
+  # checkpointDiff = torch.load('trained_model/simple_kpcn_1/diff_e6.pt')
+  # diffuseNet.load_state_dict(checkpointDiff['model_state_dict'])
+  # optimizerDiff.load_state_dict(checkpointDiff['optimizer_state_dict'])
   # diffuseNet.load_state_dict(torch.load('trained_model/simple_feat_kpcn_2/diff_e8.pt'))
   diffuseNet.train()
 
-  checkpointSpec = torch.load('trained_model/kpcn_finetune_2/spec_e4.pt')
-  specularNet.load_state_dict(checkpointSpec['model_state_dict'])
-  optimizerSpec.load_state_dict(checkpointSpec['optimizer_state_dict'])
+  # checkpointSpec = torch.load('trained_model/simple_kpcn_1/spec_e6.pt')
+  # specularNet.load_state_dict(checkpointSpec['model_state_dict'])
+  # optimizerSpec.load_state_dict(checkpointSpec['optimizer_state_dict'])
   # specularNet.load_state_dict(torch.load('trained_model/simple_feat_kpcn_2/spec_e8.pt'))
   specularNet.train()
 
@@ -292,10 +289,10 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
       # print(sample_batched.keys())
 
       # get the inputs
-      X_diff = sample_batched['kpcn_diffuse_in'].to(device)
+      X_diff = sample_batched['kpcn_diffuse_in'].to(device).half()
       # X_diff = feature_dropout(X_diff, 1.0, device)
 
-      Y_diff = sample_batched['target_diffuse'].to(device)
+      Y_diff = sample_batched['target_diffuse'].to(device).half()
       # Y_diff = feature_dropout(Y_diff, 1.0, device)
       # print(X_diff.shape, Y_diff.shape)
       # zero the parameter gradients
@@ -317,8 +314,8 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
       # optimizerDiff.step()
 
       # get the inputs
-      X_spec = sample_batched['kpcn_specular_in'].to(device)
-      Y_spec = sample_batched['target_specular'].to(device)
+      X_spec = sample_batched['kpcn_specular_in'].to(device).half()
+      Y_spec = sample_batched['target_specular'].to(device).half()
 
       # zero the parameter gradients
       optimizerSpec.zero_grad()
@@ -345,12 +342,12 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
       # calculate final ground truth error
       # with torch.no_grad():
       # albedo = sample_batched['origAlbedo'].permute(permutation).to(device)
-      albedo = sample_batched['kpcn_albedo'].to(device)
+      albedo = sample_batched['kpcn_albedo'].to(device).half()
       albedo = crop_like(albedo, outputDiff)
       # print('ALBEDO SIZE: {}'.format(sample_batched['kpcn_albedo'].shape))
       outputFinal = outputDiff * (albedo + eps) + torch.exp(outputSpec) - 1.0
 
-      Y_final = sample_batched['target_total'].to(device)
+      Y_final = sample_batched['target_total'].to(device).half()
 
       Y_final = crop_like(Y_final, outputFinal)
 

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
+import pandas as pd
 
 # Basic utilities
 class BasicConv(nn.Module):
@@ -369,14 +370,16 @@ class eca_layer(nn.Module):
 
 
 class simple_feat_layer(nn.Module):
-    def __init__(self, num_channel, debug=False):
+    def __init__(self, num_channel, layer_num, debug=False):
         super(simple_feat_layer, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc1 = nn.Linear(num_channel, num_channel, bias=False)
+        # self.fc1 = nn.Linear(num_channel, num_channel, bias=False)
         self.fc2 = nn.Linear(num_channel, num_channel, bias=False)
         self.sigmoid = nn.Sigmoid()
-        self.relu = nn.ReLU()
+        self.layer_num = layer_num
         self.debug = debug
+        self.relu = nn.ReLU()
+        # self.patch_num = patch_num
 
     def forward(self, x):
         b, c, h, w = x.size()
@@ -384,9 +387,205 @@ class simple_feat_layer(nn.Module):
         y = self.avg_pool(x).view(b, c)
         # y = self.relu(self.fc1(y))
         y = self.sigmoid(self.fc2(y))
-        # if self.debug and not self.training:
-        #     print(y)
+
+        if self.debug:
+            # print(y)
+            y_np = y.to('cpu').numpy()
+            y_df = pd.DataFrame(y_np)
+            y_df.to_csv('acts/Act_{}.csv'.format(self.layer_num))
             
         y = y.view(b, c, 1, 1)
         # print(y.shape)
         return x * y.expand((b, c, h, w))   # 0.5로 곱해보기
+        # return x * 0.5
+
+
+# spatial-pyramid channel attention module
+class spc_layer(nn.Module):
+    def __init__(self, num_channel, layer_num, level=2, debug=False):
+        super(spc_layer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.sigmoid = nn.Sigmoid()
+
+        self.fc_list = nn.ModuleList()
+        n = 0
+        for i in range(level+1):
+            n += 4 ** i
+
+        # print(n)/
+        for j  in range(n):
+            self.fc_list.append(nn.Linear(num_channel, num_channel, bias=False))
+
+        self.layer_num = layer_num
+        print(self.layer_num)
+        self.debug = debug
+
+    def forward(self, x):
+        with torch.autograd.set_detect_anomaly(True):
+            b, c, h, w = x.size()
+            # Level 0
+            avg_0 = self.avg_pool(x).view(b, c)
+            out_avg_0 = self.fc_list[0](avg_0)
+            max_0 = self.max_pool(x).view(b, c)
+            out_max_0 = self.fc_list[0](max_0)
+            out_0 = self.sigmoid(out_avg_0 + out_max_0)
+            if self.debug:
+                out_0_np = out_0.to('cpu').numpy()
+                out_0_df = pd.DataFrame(out_0_np)
+                out_0_df.to_csv('acts/spc/Act_{}_0.csv'.format(self.layer_num))
+            out_0 = out_0.view(b, c, 1, 1)
+            x_0 = x * out_0.expand((b, c, h, w))
+
+
+            # Level 1
+            # out_1_list = []
+            # out_1 = None
+            x_1 = x.clone()
+            # print(x.shape)
+            for i in range(2):
+                for j in range(2):
+                    x_sub_1 = x[:, :, i*(h//2):(i+1) * (h//2), j*(w//2):(j+1)*(w//2)]
+                    # print(x_sub_1.shape)
+                    avg_1 = self.avg_pool(x[:, :, i*(h//2):(i+1) * (h//2), j*(w//2):(j+1)*(w//2)])
+                    # print(avg_1.shape)
+                    out_avg_1 = self.fc_list[1+2*i+j](avg_1.squeeze(-1).squeeze(-1))
+                    max_1 = self.max_pool(x[:, :, i*(h//2):(i+1) * (h//2), j*(w//2):(j+1)*(w//2)])
+                    out_max_1 = self.fc_list[1+2*i+j](max_1.squeeze(-1).squeeze(-1))
+                    # out_1_list.append(self.sigmoid(out_avg_1 + out_max_1))
+                    out_1 = self.sigmoid(out_avg_1 + out_max_1)
+                    # print(out_1.shape)
+                    # out_1_list.append(x_sub_1 * out_1.expand_as(x_sub_1))
+
+                    if self.debug:
+                        out_1_np = out_1.to('cpu').numpy()
+                        out_1_df = pd.DataFrame(out_1_np)
+                        out_1_df.to_csv('acts/spc/Act_{}_{}.csv'.format(self.layer_num, 2*i+j + 1))
+
+                    out_1 = out_1.view(b, c, 1, 1)
+                    x_1[:, :, i*(h//2):(i+1) * (h//2), j*(w//2):(j+1)*(w//2)] = x_sub_1 * out_1.expand_as(x_sub_1)
+
+
+            # Level 2
+            # out_2_list = []
+            x_2 = x.clone()
+            for i in range(4):
+                for j in range(4):
+                    x_sub_2 = x[:, :, i*(h//4):(i+1) * (h//4), j*(w//4):(j+1)*(w//4)]
+                    avg_2 = self.avg_pool(x[:, :, i*(h//4):(i+1) * (h//4), j*(w//4):(j+1)*(w//4)])
+                    out_avg_2 = self.fc_list[5+4*i+j](avg_2.squeeze(-1).squeeze(-1))
+                    max_2 = self.max_pool(x[:, :, i*(h//4):(i+1) * (h//4), j*(w//4):(j+1)*(w//4)])
+                    out_max_2 = self.fc_list[5+4*i+j](max_2.squeeze(-1).squeeze(-1))
+                    # out_2_list.append(self.sigmoid(out_avg_2 + out_max_2))
+                    out_2 = self.sigmoid(out_avg_2 + out_max_2)
+                    # out_2_list.append(x_sub_2 * out_2.expand_as(x_sub_2))
+
+                    if self.debug:
+                        out_2_np = out_2.to('cpu').numpy()
+                        out_2_df = pd.DataFrame(out_2_np)
+                        out_2_df.to_csv('acts/spc/Act_{}_{}.csv'.format(self.layer_num, 4*i+j + 5))
+
+                    out_2 = out_2.view(b, c, 1, 1)
+                    x_2[:, :, i*(h//4):(i+1) * (h//4), j*(w//4):(j+1)*(w//4)] = x_sub_2 * out_2.expand_as(x_sub_2)
+
+            # print(x_0.shape, x_1.shape, x_2.shape)
+            return x_0
+
+# psc_layer(34)
+
+
+class nlblock(nn.Module):
+    def __init__(self, input_channels, inter_channels):
+        super(nlblock, self).__init__()
+        self.inter_channels = inter_channels
+        self.theta = nn.Conv2d(input_channels, inter_channels, kernel_size=1)
+        self.phi = nn.Conv2d(input_channels, inter_channels, kernel_size=1)
+        self.g = nn.Conv2d(input_channels, inter_channels, kernel_size=1)
+        
+        self.W = nn.Conv2d(inter_channels, input_channels, kernel_size=1)
+        
+
+    def forward(self, x):
+        # x = B * C * H * W
+        # print(x.shape)
+        B, C, H, W = x.shape
+        key = self.theta(x).view(B, self.inter_channels, -1)
+        value = self.phi(x).view(B, self.inter_channels, -1)
+        query = self.g(x).view(B, self.inter_channels, -1)
+        # key = x.view(B, self.inter_channels, -1)
+        # value = x.view(B, self.inter_channels, -1)
+        # query = x.view(B, self.inter_channels, -1)
+        # print(key.shape)
+        key = key.permute(0, 2, 1)
+        query = query.permute(0, 2, 1)
+
+        score = torch.matmul(key, value)
+        # print(score.shape)
+        # print(score)
+        score = F.softmax(score, dim=-1) # B * C * HW * HW
+        # score = nn.Softmax(dim=-1)(score)
+        # print(score)
+        scaled = torch.matmul(score, query)
+        # scaled = scaled.permute(0, 2, 1).contiguous()
+        del score
+        del query
+        del key
+        del value
+        scaled = scaled.permute(0, 2, 1)
+        scaled = scaled.view(B, self.inter_channels, H, W)
+        # print(scaled)
+        output = self.W(scaled)
+        del scaled
+        # output = scaled
+        return output+x
+
+
+class conv_block(nn.Module):
+    def __init__(self,ch_in,ch_out):
+        super(conv_block,self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(ch_in, ch_out, kernel_size=3,stride=1,padding=1,bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(ch_out, ch_out, kernel_size=3,stride=1,padding=1,bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True)
+        )
+
+
+    def forward(self,x):
+        x = self.conv(x)
+        return x
+        
+class sablock(nn.Module):
+    def __init__(self, ch_in, ch_out):
+        super(sablock, self).__init__()
+        self.avg_pool = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.conv = conv_block(ch_in, ch_out)
+        self.conv_atten = conv_block(ch_in, ch_out)
+        self.upsample = nn.Upsample(scale_factor=2)
+        self.sigmoid = nn.Sigmoid()
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        # print(x.shape)
+        x_res = self.conv(x)
+        x_res = self.relu(x_res)
+        # print(x_res.shape)
+        y = self.avg_pool(x)
+        # print(y.shape)
+        y = self.conv_atten(y)
+        # print(y.shape)
+        y = self.upsample(y)
+        y  = self.sigmoid(y)
+        # print(y.shape, x_res.shape)
+        # return (y * x_res) + y
+        return x * y
+
+
+# nlblock = nlblock(2, 2)
+# x = torch.rand((2, 2, 3, 3))
+# print(x)
+# y = nlblock(x)
+# print(y.shap[e])
+# print(y)

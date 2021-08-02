@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import sys
 import gc
 import matplotlib.pyplot as plt
@@ -78,6 +79,17 @@ def ToneMap(c, limit=1.5):
     col[:,:,2] /=  (1.0 + luminance / limit)
     return col
 
+
+def ToneMapTest(c, limit=1.5):
+  # c: (C=3, W, H)
+  luminance = 0.2126 * c[0,:,:] + 0.7152 * c[1,:,:] + 0.0722 * c[2,:,:]
+  col = c.clone().detach()
+  col[0,:,:] /=  (1.0 + luminance / limit)
+  col[1,:,:] /=  (1.0 + luminance / limit)
+  col[2,:,:] /=  (1.0 + luminance / limit)
+  kInvGamma = 1.0 / 2.2
+  return torch.clip(col ** kInvGamma, 0.0, 1.0)
+
 def LinearToSrgb(c):
     # c: (W, H, C=3)
     kInvGamma = 1.0 / 2.2
@@ -86,13 +98,14 @@ def LinearToSrgb(c):
 def ToneMapBatch(c):
     # c: (B, C=3, W, H)
     luminance = 0.2126 * c[:,0,:,:] + 0.7152 * c[:,1,:,:] + 0.0722 * c[:,2,:,:]
-    col = c.copy()
+    col = c.clone().detach()
     col[:,0,:,:] /= (1 + luminance / 1.5)
     col[:,1,:,:] /= (1 + luminance / 1.5)
     col[:,2,:,:] /= (1 + luminance / 1.5)
-    col = np.clip(col, 0, None)
+    # col = torch.clip(col,   0, None)
     kInvGamma = 1.0 / 2.2
-    return np.clip(col ** kInvGamma, 0.0, 1.0)
+    # return torch.clip(col ** kInvGamma, 0.0, 1.0)
+    return c
 
 
 def crop_like(src, tgt):
@@ -137,3 +150,8 @@ def trial_name(args):
 
   # print(os.path.join(train_dir, trial))
   return trial
+
+
+def albedo_process(albedo, rad):
+  background_mask = albedo[:,:,:,:] == 0
+  print(background_mask.shape)

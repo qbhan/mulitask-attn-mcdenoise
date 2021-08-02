@@ -1,9 +1,6 @@
-from distutils.core import setup
+import distutils.core
+import Cython.Build
 
-setup(
-    name='kpcn',
-    version='1.0',
-    install_requires=[
-        'torch', 'torchvision', 'scikit-image', 'scipy', 'pyexr'
-    ]
-)
+import Cython.Build
+distutils.core.setup(
+    ext_modules = Cython.Build.cythonize("test_cython.pyx"))

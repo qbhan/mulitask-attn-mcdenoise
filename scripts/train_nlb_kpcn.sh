@@ -1,5 +1,5 @@
-python train.py \
-  --mode 'simple_feat_kpcn' \
+python train_half.py \
+  --mode 'nlb_kpcn' \
   --input_channels 34 \
   --hidden_channels 100 \
   --num_layer 9 \
@@ -8,5 +8,5 @@ python train.py \
   --lr 1e-4 \
   --epochs 20 \
   --loss 'L1' \
-  --data_dir '/root/kpcn_data/kpcn_data/data' \
-  # --do_finetune
+  --data_dir '/root/kpcn_data/kpcn_data/data' 
+#   --do_finetune

@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from utils import *
 from model import *
-
+from unet import DenseUnet, encoderUnet, decoderUnet, sampleUnet
 from losses import *
 from dataset import MSDenoiseDataset, init_data
 
@@ -82,8 +82,8 @@ parser.add_argument('--lr', default=1e-4, type=float)
 parser.add_argument('--epochs', default=20, type=int)
 parser.add_argument('--loss', default='L1')
 
-save_dir = 'test_kpcn_finetune_3'
-writer = SummaryWriter('final_runs/'+save_dir)
+save_dir = 'multitask_albedo_scale_1_12'
+writer = SummaryWriter('runs/'+save_dir)
 
 
 def feature_dropout(tensor_input, threshold, device):
@@ -104,16 +104,24 @@ def feature_dropout(tensor_input, threshold, device):
 
 
 
-def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoch, mode='kpcn'):
+def validation(models, dataloader, eps, criterion, device, epoch, mode='kpcn'):
   pass
   lossDiff = 0
   lossSpec = 0
   lossFinal = 0
   relL2Final = 0
+  lossAlbedo = 0
+  lossDepth = 0
+  lossNormal = 0
   relL2 = RelativeMSE()
   # for batch_idx, data in enumerate(dataloader):
   batch_idx = 0
-  diffuseNet, specularNet = diffuseNet.eval(), specularNet.eval()
+  # diffuseNet, specularNet = diffuseNet.eval(), specularNet.eval()
+
+  diffuseNet, specularNet = models['diffuse'].to(device), models['specular'].to(device)
+  encodeNet = models['encode'].to(device)
+  albedoNet, depthNet, normalNet = models['albedo'].to(device), models['depth'].to(device), models['normal'].to(device)
+  diffuseNet.eval(), specularNet.eval(), encodeNet.eval(), albedoNet.eval(), depthNet.eval(), normalNet.eval()
   with torch.no_grad():
     for data in tqdm(dataloader, leave=False, ncols=70):
       X_diff = data['kpcn_diffuse_in'].to(device)
@@ -150,11 +158,27 @@ def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoc
       albedo = data['kpcn_albedo'].to(device)
       albedo = crop_like(albedo, outputDiff)
       outputFinal = outputDiff * (albedo + eps) + torch.exp(outputSpec) - 1.0
-
+      # print('OUTPUT SIZE : {}'.format(outputDiff.shape))
       Y_final = data['target_total'].to(device)
       Y_final = crop_like(Y_final, outputFinal)
       lossFinal += criterion(outputFinal, Y_final).item()
-      relL2Final += relL2(outputFinal, Y_final).item()
+      relL2Final += relL2(outputFinal, Y_final)
+
+
+      normal = crop_like(data['kpcn_diffuse_in'][:,10:13,:,:], outputDiff).to(device)
+      depth = crop_like(data['kpcn_diffuse_in'][:,20,:,:], outputDiff).to(device)
+
+      # g-buffer estimation
+      enc = encodeNet(outputFinal) # 8 * 3 * 96 * 96
+      # print(len(enc))
+      outputAlbedo, outputDepth, outputNormal = albedoNet(enc[0], enc[1], enc[2], enc[3]), depthNet(enc[0], enc[1], enc[2], enc[3]), normalNet(enc[0], enc[1], enc[2], enc[3])
+      # outputAlbedo, outputDepth, outputNormal = crop_like(albedo, )
+      # print('Depth SIZE : {}, {}'.format(outputDepth.shape, depth.unsqueeze(1).shape))
+      lossAlbedo +=  criterion(outputAlbedo, albedo).item()
+      lossDepth += criterion(outputDepth, depth.unsqueeze(1)).item()
+      lossNormal += criterion(outputNormal, normal).item()
+      # loss_finetune = lossFinal + lossAlbedo, lossDepth, lossNormal
+
 
       # visualize
       if batch_idx == 10:
@@ -173,12 +197,12 @@ def validation(diffuseNet, specularNet, dataloader, eps, criterion, device, epoc
       batch_idx += 1
 
 
-    return lossDiff/(4*len(dataloader)), lossSpec/(4*len(dataloader)), lossFinal/(4*len(dataloader)), relL2Final/(4*len(dataloader))
+    return lossDiff/(4*len(dataloader)), lossSpec/(4*len(dataloader)), lossFinal/(4*len(dataloader)), relL2Final/(4*len(dataloader)), lossAlbedo/(4*len(dataloader)), lossDepth/(4*len(dataloader)), lossNormal/(4*len(dataloader))
 
 def train(mode, device, trainset, validset, eps, L, input_channels, hidden_channels, kernel_size, epochs, learning_rate, loss, do_early_stopping, do_feature_dropout, do_finetune):
   # print('TRAINING WITH VALIDDATASET : {}'.format(validset))
   dataloader = DataLoader(trainset, batch_size=8, num_workers=1, pin_memory=False)
-  print(len(dataloader))
+  # print(len(dataloader))
 
   if validset is not None:
     validDataloader = DataLoader(validset, batch_size=4, num_workers=1, pin_memory=False)
@@ -194,31 +218,31 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   elif 'simple_feat' in mode:
     diffuseNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
     specularNet = make_simple_feat_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-  elif 'simple' in mode:
-    diffuseNet = make_simple_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_simple_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
   elif 'dense_unet' in mode:
     diffuseNet = make_DenseUnet(input_channels, mode).to(device)
     specularNet = make_DenseUnet(input_channels, mode).to(device)
   elif 'spc' in mode:
     diffuseNet = make_spc_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
     specularNet = make_spc_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-  elif 'nlb' in mode:
-    diffuseNet = make_nlb_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_nlb_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-  elif 'sa' in mode:
-    diffuseNet = make_sa_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
-    specularNet = make_sa_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
   else:
     print(mode)
     diffuseNet = make_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
     specularNet = make_net(L, input_channels, hidden_channels, kernel_size, mode).to(device)
 
-  print(diffuseNet, "CUDA:", next(diffuseNet.parameters()).is_cuda)
-  print('# Parameter for diffuseNet : {}'.format(sum([p.numel() for p in diffuseNet.parameters()])))
-  print(specularNet, "CUDA:", next(specularNet.parameters()).is_cuda)
-  print('# Parameter for specularNet : {}'.format(sum([p.numel() for p in diffuseNet.parameters()])))
+  encodeNet = encoderUnet().to(device)
+  albedoNet, depthNet, normalNet = decoderUnet(mode=0).to(device), decoderUnet(out_channel=1, mode=2).to(device), decoderUnet(mode=1).to(device)
 
+  print(diffuseNet, "CUDA:", next(diffuseNet.parameters()).is_cuda)
+  print(specularNet, "CUDA:", next(specularNet.parameters()).is_cuda)
+  print(encodeNet, "CUDA:", next(encodeNet.parameters()).is_cuda)
+  print(albedoNet, "CUDA:", next(albedoNet.parameters()).is_cuda)
+
+  print('# Parameter for diffuseNet : {}'.format(sum([p.numel() for p in diffuseNet.parameters()])))
+  print('# Parameter for specularNet : {}'.format(sum([p.numel() for p in specularNet.parameters()])))
+  print('# Parameter for encodeNet : {}'.format(sum([p.numel() for p in encodeNet.parameters()])))
+  print('# Parameter for albedoNet, depthNet, normalNet : {}'.format(sum([p.numel() for p in albedoNet.parameters()])))
+
+  
   if loss == 'L1':
     criterion = nn.L1Loss()
   else:
@@ -227,23 +251,39 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   print('LEARNING RATE : {}'.format(learning_rate))
   optimizerDiff = optim.Adam(diffuseNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
   optimizerSpec = optim.Adam(specularNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
+  optimizerEnc = optim.Adam(encodeNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
+  optimizerA = optim.Adam(albedoNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
+  optimizerD = optim.Adam(depthNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
+  optimizerN = optim.Adam(normalNet.parameters(), lr=learning_rate, betas=(0.9, 0.99))
 
-  checkpointDiff = torch.load('trained_model/kpcn_finetune_2/diff_e4.pt')
-  diffuseNet.load_state_dict(checkpointDiff['model_state_dict'])
-  optimizerDiff.load_state_dict(checkpointDiff['optimizer_state_dict'])
+  # checkpointDiff = torch.load('trained_model/multitask/diff_e2.pt')
+  # diffuseNet.load_state_dict(checkpointDiff['model_state_dict'])
+  # optimizerDiff.load_state_dict(checkpointDiff['optimizer_state_dict'])
   # diffuseNet.load_state_dict(torch.load('trained_model/simple_feat_kpcn_2/diff_e8.pt'))
-  diffuseNet.train()
 
-  checkpointSpec = torch.load('trained_model/kpcn_finetune_2/spec_e4.pt')
-  specularNet.load_state_dict(checkpointSpec['model_state_dict'])
-  optimizerSpec.load_state_dict(checkpointSpec['optimizer_state_dict'])
+  # checkpointSpec = torch.load('trained_model/multitask/spec_e2.pt')
+  # specularNet.load_state_dict(checkpointSpec['model_state_dict'])
+  # optimizerSpec.load_state_dict(checkpointSpec['optimizer_state_dict'])
   # specularNet.load_state_dict(torch.load('trained_model/simple_feat_kpcn_2/spec_e8.pt'))
-  specularNet.train()
 
+  # checkpointEncode = torch.load('trained_model/multitask/encode_e2.pt')
+  # encodeNet.load_state_dict(checkpointEncode['model_state_dict'])
+  # optimizerEnc.load_state_dict(checkpointEncode['optimizer_state_dict'])
 
-  accuLossDiff = 0
-  accuLossSpec = 0
-  accuLossFinal = 0
+  # checkpointAlbedo = torch.load('trained_model/multitask/albedo_e2.pt')
+  # albedoNet.load_state_dict(checkpointAlbedo['model_state_dict'])
+  # optimizerA.load_state_dict(checkpointAlbedo['optimizer_state_dict'])
+
+  # checkpointDepth = torch.load('trained_model/multitask/depth_e2.pt')
+  # depthNet.load_state_dict(checkpointDepth['model_state_dict'])
+  # optimizerD.load_state_dict(checkpointDepth['optimizer_state_dict'])
+
+  # checkpointNormal = torch.load('trained_model/multitask/normal_e2.pt')
+  # normalNet.load_state_dict(checkpointNormal['model_state_dict'])
+  # optimizerN.load_state_dict(checkpointNormal['optimizer_state_dict'])
+  
+  accuLossDiff, accuLossSpec, accuLossFinal = 0, 0, 0
+  accuLossAlbedo, accuLossDepth, accuLossNormal = 0, 0, 0
   
   lDiff = []
   lSpec = []
@@ -254,18 +294,25 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
 
   # writer = SummaryWriter('runs/'+mode+'_2')
   total_epoch = 0
-  # epoch = checkpointDiff['epoch']
-  epoch = 0
+  models = {'diffuse': diffuseNet, 'specular': specularNet, 'encode': encodeNet, 'albedo': albedoNet, 'depth': depthNet, 'normal': normalNet}
   print('Check Initialization')
-  initLossDiff, initLossSpec, initLossFinal, relL2LossFinal = validation(diffuseNet, specularNet, validDataloader, eps, criterion, device, -1, mode)
+  initLossDiff, initLossSpec, initLossFinal, relL2LossFinal, initLossAlbedo, initLossDepth, initLossNormal = validation(models, validDataloader, eps, criterion, device, -1, mode)
   print("initLossDiff: {}".format(initLossDiff))
   print("initLossSpec: {}".format(initLossSpec))
   print("initLossFinal: {}".format(initLossFinal))
   print("relL2LossFinal: {}".format(relL2LossFinal))
-  writer.add_scalar('Valid total relL2 loss', relL2LossFinal if relL2LossFinal != float('inf') else 0, (epoch + 1) * len(validDataloader))
-  writer.add_scalar('Valid total loss', initLossFinal if initLossFinal != float('inf') else 0, (epoch + 1) * len(validDataloader))
-  writer.add_scalar('Valid diffuse loss', initLossDiff if initLossDiff != float('inf') else 0, (epoch + 1) * len(validDataloader))
-  writer.add_scalar('Valid specular loss', initLossSpec if initLossSpec != float('inf') else 0, (epoch + 1) * len(validDataloader))
+  print("initLossAlbedo: {}".format(initLossAlbedo))
+  print("initLossDepth: {}".format(initLossDepth))
+  print("initLossNormal: {}".format(initLossNormal))
+  epoch = 0
+  if epoch == 0:
+    writer.add_scalar('Valid total relL2 loss', relL2LossFinal if relL2LossFinal != float('inf') else 0, epoch)
+    writer.add_scalar('Valid total loss', initLossFinal if initLossFinal != float('inf') else 0, epoch)
+    writer.add_scalar('Valid diffuse loss', initLossDiff if initLossDiff != float('inf') else 0, epoch)
+    writer.add_scalar('Valid specular loss', initLossSpec if initLossSpec != float('inf') else 0, epoch)
+    writer.add_scalar('Valid albedo loss', initLossAlbedo if initLossAlbedo != float('inf') else 0, epoch)
+    writer.add_scalar('Valid depth loss', initLossDepth if initLossDepth != float('inf') else 0, epoch)
+    writer.add_scalar('Valid normal loss', initLossNormal if initLossNormal != float('inf') else 0, epoch)
 
 
   import time
@@ -273,17 +320,14 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   start = time.time()
   print('START')
 
-  # print(len(dataloader))
-  # for sample_batched in tqdm(dataloader, leave=False, ncols=70):
-  #     # i_batch += 1
-  #     print(sample_batched.keys())
-  #     print('KPCN_DIFFUSE_IN : {}'.format(sample_batched['kpcn_diffuse_in'].shape))
-  #     print('KPCN_DIFFUSE_BUFFER : {}'.format(sample_batched['kpcn_diffuse_buffer'].shape))
-
   for epoch in range(0, epochs):
     print('EPOCH {}'.format(epoch+1))
     diffuseNet.train()
     specularNet.train()
+    encodeNet.train()
+    albedoNet.train()
+    depthNet.train()
+    normalNet.train()
     # for i_batch, sample_batched in enumerate(dataloader):
     i_batch = -1
     for sample_batched in tqdm(dataloader, leave=False, ncols=70):
@@ -297,7 +341,6 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
 
       Y_diff = sample_batched['target_diffuse'].to(device)
       # Y_diff = feature_dropout(Y_diff, 1.0, device)
-      # print(X_diff.shape, Y_diff.shape)
       # zero the parameter gradients
       optimizerDiff.zero_grad()
 
@@ -310,11 +353,7 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
         outputDiff = apply_kernel(outputDiff, X_input, device)
 
       Y_diff = crop_like(Y_diff, outputDiff)
-      # print('DIFF SHAPES : {}, {}'.format(outputDiff.shape, Y_diff.shape))
 
-      # lossDiff = criterion(outputDiff, Y_diff)
-      # lossDiff.backward()
-      # optimizerDiff.step()
 
       # get the inputs
       X_spec = sample_batched['kpcn_specular_in'].to(device)
@@ -336,44 +375,85 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
       lossDiff = criterion(outputDiff, Y_diff)
       lossSpec = criterion(outputSpec, Y_spec)
       # if epoch >= 0:
-      if not do_finetune:
-        lossDiff.backward()
-        optimizerDiff.step()
-        lossSpec.backward()
-        optimizerSpec.step()
+      # if not do_finetune:
+      #   lossDiff.backward()
+      #   optimizerDiff.step()
+      #   lossSpec.backward()
+      #   optimizerSpec.step()
 
       # calculate final ground truth error
       # with torch.no_grad():
       # albedo = sample_batched['origAlbedo'].permute(permutation).to(device)
       albedo = sample_batched['kpcn_albedo'].to(device)
       albedo = crop_like(albedo, outputDiff)
+      normal = crop_like(sample_batched['kpcn_diffuse_in'][:,10:13,:,:], outputDiff).to(device)
+      depth = crop_like(sample_batched['kpcn_diffuse_in'][:,20,:,:], outputDiff).to(device)
       # print('ALBEDO SIZE: {}'.format(sample_batched['kpcn_albedo'].shape))
       outputFinal = outputDiff * (albedo + eps) + torch.exp(outputSpec) - 1.0
 
       Y_final = sample_batched['target_total'].to(device)
-
       Y_final = crop_like(Y_final, outputFinal)
 
       lossFinal = criterion(outputFinal, Y_final)
 
-      if do_finetune:
-        # print('FINETUNING')
-        lossFinal.backward()
-        optimizerDiff.step()
-        optimizerSpec.step()
+      optimizerEnc.zero_grad()
+      optimizerA.zero_grad()
+      optimizerD.zero_grad()
+      optimizerN.zero_grad()
+
+			# g-buffer estimation
+      enc = encodeNet(outputFinal) # 8 * 3 * 96 * 96
+      outputAlbedo, outputDepth, outputNormal = albedoNet(enc[0], enc[1], enc[2], enc[3]), depthNet(enc[0], enc[1], enc[2], enc[3]), normalNet(enc[0], enc[1], enc[2], enc[3])
+      # print('ALBEDO SIZE : {}, {}'.format(outputAlbedo.shape, albedo.shape))
+      lossAlbedo, lossDepth, lossNormal = criterion(outputAlbedo, albedo), criterion(outputDepth, depth.unsqueeze(1)), criterion(outputNormal, normal)
+      # lossAlbedo = criterion(outputAlbedo, albedo)
+      # loss_finetune = lossDiff + lossSpec + 0.1 * lossAlbedo + 0.1 * lossDepth + 0.1 * lossNormal
+      loss_finetune = lossDiff + lossSpec + lossAlbedo
+      loss_finetune.backward()
+      optimizerDiff.step()
+      optimizerSpec.step()
+      optimizerEnc.step()
+      optimizerA.step()
+      # optimizerD.step()
+      # optimizerN.step()
+
+      # if do_finetune:
+      #   # print('FINETUNING')
+
+      #   # g-buffer estimation
+      #   enc = encodeNet(outputFinal) # 8 * 3 * 96 * 96
+      #   outputAlbedo, outputDepth, outputNormal = albedoNet(enc), depthNet(enc), normalNet(enc)
+      #   loss_finetune = lossFinal + criterion(outputAlbedo, albedo) + criterion(outputDepth, depth) + criterion(outputNormal, normal)
+
+      #   loss_finetune.backward()
+      #   optimizerDiff.step()
+      #   optimizerSpec.step()
       accuLossFinal += lossFinal.item()
 
       accuLossDiff += lossDiff.item()
       accuLossSpec += lossSpec.item()
+      accuLossAlbedo += lossAlbedo.item()
+      accuLossDepth += lossDepth.item()
+      accuLossNormal += lossNormal.item()
 
       writer.add_scalar('lossFinal',  lossFinal if lossFinal != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
       writer.add_scalar('lossDiffuse', lossDiff if lossDiff != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
       writer.add_scalar('lossSpec', lossSpec if lossSpec != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+      writer.add_scalar('lossAlbedo', lossAlbedo if lossAlbedo != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+      writer.add_scalar('lossDepth', lossDepth if lossDepth != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+      writer.add_scalar('lossNormal', lossNormal if lossNormal != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+
+
+      
     
     accuLossDiff, accuLossSpec, accuLossFinal = accuLossDiff/(8*len(dataloader)), accuLossSpec/(8*len(dataloader)), accuLossFinal/(8*len(dataloader))
     writer.add_scalar('Train total loss', accuLossFinal if accuLossFinal != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
     writer.add_scalar('Train diffuse loss', accuLossDiff if accuLossDiff != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
     writer.add_scalar('Train specular loss', accuLossSpec if accuLossSpec != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+    writer.add_scalar('Train albedo loss', accuLossAlbedo if accuLossAlbedo != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+    writer.add_scalar('Train depth loss', accuLossDepth if accuLossDepth != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+    writer.add_scalar('Train normal loss', accuLossNormal if accuLossNormal != float('inf') else 1e+35, epoch * len(dataloader) + i_batch)
+
 
 
     if not os.path.exists('trained_model/' + save_dir):
@@ -392,21 +472,50 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
             'model_state_dict': specularNet.state_dict(),
             'optimizer_state_dict': optimizerSpec.state_dict(),
             }, 'trained_model/'+ save_dir + '/spec_e{}.pt'.format(epoch+1))
-    # print('VALIDATION WORKING!')
-    validLossDiff, validLossSpec, validLossFinal, relL2LossFinal = validation(diffuseNet, specularNet, validDataloader, eps, criterion, device, epoch, mode)
+    torch.save({
+            'epoch': epoch,
+            'model_state_dict': encodeNet.state_dict(),
+            'optimizer_state_dict': optimizerEnc.state_dict(),
+            }, 'trained_model/'+ save_dir + '/encode_e{}.pt'.format(epoch+1))
+    torch.save({
+            'epoch': epoch,
+            'model_state_dict': albedoNet.state_dict(),
+            'optimizer_state_dict': optimizerA.state_dict(),
+            }, 'trained_model/'+ save_dir + '/albedo_e{}.pt'.format(epoch+1))
+    torch.save({
+            'epoch': epoch,
+            'model_state_dict': depthNet.state_dict(),
+            'optimizer_state_dict': optimizerD.state_dict(),
+            }, 'trained_model/'+ save_dir + '/depth_e{}.pt'.format(epoch+1))
+    torch.save({
+            'epoch': epoch,
+            'model_state_dict': normalNet.state_dict(),
+            'optimizer_state_dict': optimizerN.state_dict(),
+            }, 'trained_model/'+ save_dir + '/normal_e{}.pt'.format(epoch+1))
+
+
+    # Validation
+    models = {'diffuse': diffuseNet, 'specular': specularNet, 'encode': encodeNet, 'albedo': albedoNet, 'depth': depthNet, 'normal': normalNet}
+    validLossDiff, validLossSpec, validLossFinal, relL2LossFinal, validLossAlbedo, validLossDepth, validLossNormal = validation(models, validDataloader, eps, criterion, device, epoch, mode)
     writer.add_scalar('Valid total relL2 loss', relL2LossFinal if relL2LossFinal != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
-    writer.add_scalar('Valid total loss', validLossFinal if accuLossFinal != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
-    writer.add_scalar('Valid diffuse loss', validLossDiff if accuLossDiff != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
-    writer.add_scalar('Valid specular loss', validLossSpec if accuLossSpec != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
+    writer.add_scalar('Valid total loss', validLossFinal if validLossFinal != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
+    writer.add_scalar('Valid diffuse loss', validLossDiff if validLossDiff != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
+    writer.add_scalar('Valid specular loss', validLossSpec if validLossSpec != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
+    writer.add_scalar('Valid albedo loss', validLossAlbedo if validLossAlbedo != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
+    writer.add_scalar('Valid depth loss', validLossDepth if validLossDepth != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
+    writer.add_scalar('Valid normal loss', validLossNormal if validLossNormal != float('inf') else 1e+35, (epoch + 1) * len(dataloader))
 
     print("Epoch {}".format(epoch + 1))
-    print("LossDiff: {}".format(accuLossDiff))
-    print("LossSpec: {}".format(accuLossSpec))
-    print("LossFinal: {}".format(accuLossFinal))
+    print("TrainLossDiff: {}".format(accuLossDiff))
+    print("TrainLossSpec: {}".format(accuLossSpec))
+    print("TrainLossFinal: {}".format(accuLossFinal))
     print("ValidrelL2LossDiff: {}".format(relL2LossFinal))
     print("ValidLossDiff: {}".format(validLossDiff))
     print("ValidLossSpec: {}".format(validLossSpec))
     print("ValidLossFinal: {}".format(validLossFinal))
+    print("ValidLossAlbedo: {}".format(validLossAlbedo))
+    print("ValidLossDepth: {}".format(validLossDepth))
+    print("ValidLossNormal: {}".format(validLossNormal))
 
     lDiff.append(accuLossDiff)
     lSpec.append(accuLossSpec)
@@ -414,23 +523,6 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
     valLDiff.append(validLossDiff)
     valLSpec.append(validLossSpec)
     valLFinal.append(validLossFinal)
-
-    # if not os.path.exists('trained_model/' + save_dir):
-    #   os.makedirs('trained_model/' + save_dir)
-    #   print('MAKE DIR {}'.format('trained_model/'+save_dir))
-
-    # # torch.save(diffuseNet.state_dict(), 'trained_model/'+ save_dir + '/diff_e{}.pt'.format(epoch+1))
-    # torch.save({
-    #         'epoch': epoch,
-    #         'model_state_dict': diffuseNet.state_dict(),
-    #         'optimizer_state_dict': optimizerDiff.state_dict(),
-    #         }, 'trained_model/'+ save_dir + '/diff_e{}.pt'.format(epoch+1))
-    # # torch.save(specularNet.state_dict(), 'trained_model/' + save_dir + '/spec_e{}.pt'.format(epoch+1))
-    # torch.save({
-    #         'epoch': epoch,
-    #         'model_state_dict': specularNet.state_dict(),
-    #         'optimizer_state_dict': optimizerSpec.state_dict(),
-    #         }, 'trained_model/'+ save_dir + '/spec_e{}.pt'.format(epoch+1))
 
     print('SAVED {}/diff_e{}, {}/spec_e{}'.format(save_dir, epoch+1, save_dir, epoch+1))
 
@@ -446,8 +538,8 @@ def train(mode, device, trainset, validset, eps, L, input_channels, hidden_chann
   writer.close()
   print('Finished training in mode, {} with epoch {}'.format(mode, total_epoch))
   print('Took', time.time() - start, 'seconds.')
-  
-  return diffuseNet, specularNet, lDiff, lSpec, lFinal
+  models = {'diffuse': diffuseNet, 'specular': specularNet, 'encode': encodeNet, 'albedo': albedoNet, 'depth': depthNet, 'normal': normalNet}
+  return models
 
 
 def main():

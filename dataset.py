@@ -16,19 +16,9 @@ import matplotlib.pyplot as plt
 
 from utils import ToneMap, LinearToSrgb
 
-
-class KPCNDataset(torch.utils.data.Dataset):
-  def __init__(self, cropped):
-    self.samples = cropped
-
-  def __len__(self):
-    return len(self.samples)
-
-  def __getitem__(self, idx):
-    return self.samples[idx]
-
-
-random.seed("Kyubeom Han, Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
+random.seed("Kyubeom Han")
+# random.seed("Inyoung Cho")
+# random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
 
 
 def gradient_importance_map(img):
@@ -86,7 +76,7 @@ class DenoiseDataset(Dataset):
 
     MAX_DEPTH = 5
 
-    PATCH_SIZE = 128
+    PATCH_SIZE = 128 #128
 
     """LLPM input set
         'paths':
@@ -305,7 +295,9 @@ class DenoiseDataset(Dataset):
         }
 
         # Set random seeds
-        random.seed("Kyubeom Han, Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
+        random.seed("Kyubeom Han")
+        # random.seed("Inyoung Cho")
+        # random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
         random.shuffle(self.gt_files)
 
         # Constants for patch importance sampling
@@ -314,13 +306,18 @@ class DenoiseDataset(Dataset):
         elif sampling == 'grid':
             self.patches_per_image = 100
         elif sampling == 'recon':
-            self.patches_per_image = 15 * 15
+            self.patches_per_image = 15 * 15 # 19 * 19 for training, 15*15 for test
         else:
             raise RuntimeError("Unknown training mode %s" % mode)
         self.samples = None
     
     def __len__(self):
-        return len(self.gt_files) * self.patches_per_image
+        # print(len(self.gt_files) * self.patches_per_image)
+        return (len(self.gt_files) // 1) * self.patches_per_image
+        # print(self.patches_per_image)
+        # return self.patches_per_image
+        # if self.mode == 'train'
+        # return 256
 
 # Preprocessing
     def _gradients(self, buf):
@@ -528,7 +525,7 @@ class DenoiseDataset(Dataset):
             kpcn_buffer(numpy.array) which consists of:
                 diffuse_r, diffuse_g, diffuse_b, diffuse_v, # albedo factored
                 diffuse_r_dx, diffuse_g_dx, diffuse_b_dx, diffuse_r_dy, diffuse_g_dy, diffuse_b_dy,
-                specular_r, specular_g, specular_b, specular_v, 
+                specular_r, specular_g, specular_b, specular_v,
                 specular_r_dx, specular_g_dx, specular_b_dx, specular_r_dy, specular_g_dy, specular_b_dy, # log
                 normals_x, normals_y, normals_z, normals_v, 
                 normals_x_dx, normals_y_dx, normals_z_dx, normals_x_dy, normals_y_dy, normals_z_dy, 
@@ -914,6 +911,7 @@ class DenoiseDataset(Dataset):
                             patch[k] = sample[k]
                     
                     self.samples.append(patch)
+        # print('PATCH NUM FOR VAL SCENE : {}'.format(len(self.samples)))
 
     def _recon_patches(self, sample):
         """Return all grid patches
@@ -923,6 +921,7 @@ class DenoiseDataset(Dataset):
             h, w, _, = sample['target_image'].shape
         elif self.base_model == 'kpcn':
             h, w, _, = sample['target_diffuse'].shape
+            # print(h, w)
         elif self.base_model == 'amcd':
             h, w, _, = sample[0]['ref'].shape
 
@@ -1114,7 +1113,7 @@ class DenoiseDataset(Dataset):
                 // No global features
         """
         
-        img_idx = idx // self.patches_per_image
+        img_idx = idx // self.patches_per_image + 0
         pat_idx = idx % self.patches_per_image
         # print('get item : {}, {}'.format(idx, pat_idx))
         if (pat_idx == 0):
@@ -1158,6 +1157,7 @@ class DenoiseDataset(Dataset):
                 kpcn_fn = get_valid_path(kpcn_fn)
 
                 _in = np.load(kpcn_fn)
+                # print(np.shape(_in))
                 
                 sample['kpcn_diffuse_in'] = np.concatenate([_in[...,:10], _in[...,20:]], axis=2)
                 sample['kpcn_specular_in'] = _in[...,10:]
@@ -1277,8 +1277,8 @@ class DenoiseDataset(Dataset):
                 raise RuntimeError("Unknown training mode %s" % self.mode)
         if self.samples != None: len(self.samples)
         out = self.samples[pat_idx]
-        #if self.sampling == 'random':
-        #    out = self._random_rot(self._random_flip(out))
+        # if self.sampling == 'random':
+        # out = self._random_rot(self._random_flip(out))
         out = self._transpose(out)
 
         return out
@@ -1570,6 +1570,7 @@ class FullImageDataset(Dataset):
 
 def init_data(args):
     # Initialize datasets
+    print('init_data')
     datasets = {}
     # datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
     #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=False, pnet_out_size=3)
@@ -1580,6 +1581,8 @@ def init_data(args):
     #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=False, pnet_out_size=3)
     datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', 4, 'grid',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=False, pnet_out_size=3)
+    # datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', 4, 'grid',
+    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=False, pnet_out_size=3)
     
     # Initialize dataloaders
     dataloaders = {}
