@@ -1,0 +1,17 @@
+__pycache__/
+.empty/
+acts/
+albedo_runs/
+build/
+draw_patch/
+final_runs/
+runs/
+test/
+test_data/
+train_data/
+trained_model/
+*.c
+*.so
+*.pyx
+
+
